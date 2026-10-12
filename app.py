@@ -16,7 +16,10 @@ FEATURES = ['year','source_page','university_id_encoded','programme_id_encoded',
 
 @lru_cache(maxsize=1)
 def load_package():
-    with (ROOT / 'model_deployment_package.pkl').open('rb') as f:
+    model_path = ROOT / 'model_deployment_package.pkl'
+    if not model_path.is_file():
+        raise FileNotFoundError('Trained model is missing. Upload model_deployment_package.pkl to the repository root.')
+    with model_path.open('rb') as f:
         pkg = pickle.load(f)
     for field in ('model', 'target_mappings', 'global_mean'):
         if field not in pkg:
@@ -57,9 +60,24 @@ def encoded_frame(r: PredictionRequest, year: int, pkg: dict):
 def home():
     return FileResponse(ROOT / 'static' / 'index.html')
 
+@app.get('/api/health')
+def health():
+    model_present = (ROOT / 'model_deployment_package.pkl').is_file()
+    return {'status': 'ready' if model_present else 'model_missing', 'model_available': model_present}
+
+
+def require_package():
+    try:
+        return load_package()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail='Unable to load the trained model. Check its format and dependencies.') from exc
+
+
 @app.get('/api/options')
 def options():
-    pkg = load_package()
+    pkg = require_package()
     mapping = pkg['target_mappings']
     return {
         'universities': list(mapping['university_id'].keys()),
@@ -74,7 +92,7 @@ def options():
 
 @app.post('/api/predict')
 def predict(r: PredictionRequest):
-    pkg = load_package()
+    pkg = require_package()
     for field in ['university_id','programme_id','college','category','seat_type','round']:
         if getattr(r, field) not in pkg['target_mappings'][field]:
             raise HTTPException(status_code=422, detail=f'Unsupported {field} choice')
