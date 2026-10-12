@@ -37,6 +37,7 @@ class PredictionRequest(BaseModel):
     seat_type: str
     round: str
     source_page: float = Field(default=0, ge=-10000, le=10000)
+    annual_change_pct: float = Field(default=0, ge=-15, le=15, description='User-defined annual scenario adjustment, not a learned model forecast')
 
 def encoded_frame(r: PredictionRequest, year: int, pkg: dict):
     values = r.model_dump()
@@ -107,14 +108,28 @@ def predict(r: PredictionRequest):
         if not np.isfinite(score):
             raise HTTPException(status_code=500, detail='Model returned an invalid prediction')
         predictions.append({'year':year,'cutoff':round(score, 2)})
+    # What-if projection: adjust each raw model prediction relative to the
+    # 2027 baseline. This rate is an explicit user assumption, NOT learned
+    # from historical cutoff data. At 0%, the raw model remains unchanged.
+    rate = r.annual_change_pct / 100.0
+    scenario = [
+        {'year': item['year'], 'cutoff': round(item['cutoff'] * (1 + rate) ** (item['year'] - 2027), 2)}
+        for item in predictions
+    ]
+    model_flat = len({item['cutoff'] for item in predictions}) == 1
     return {
         'forecasts': predictions,
+        'scenario_forecasts': scenario,
+        'annual_change_pct': r.annual_change_pct,
+        'model_forecasts_flat': model_flat,
+        'scenario_change': round(scenario[-1]['cutoff'] - scenario[0]['cutoff'], 2),
         'change': round(predictions[-1]['cutoff'] - predictions[0]['cutoff'],2),
         'unknown_combinations': sorted(unknown),
         'uses_fallback_encoding': bool(unknown),
         'warnings': [
             'These are extrapolated model estimates, not official cutoffs or admission guarantees.',
             'The training dataset and year range are not included in this package; future-year accuracy is unverified.',
+            'Scenario projections use a user-specified annual percentage and are not predictions made by the trained model.',
         ]
     }
 
